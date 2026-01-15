@@ -18,7 +18,7 @@ install making sure you have all the package versions as specified in this scrip
 **Don’t forget to activate the conda env before running the WILDSEQ script:** `conda activate wildseq`.
 
 ## SYNOPSIS
-**WILDSEQ** is based on the **LAMPSEQ** workflow [URL], adapted for qPCR data. In brief, **WILDSEQ** takes input `fastq` files and performs quality control, primer trimming, alignment, and 
+**WILDSEQ** is based on [LAMPSEQ](https://github.com/oliviayugovich/LAMPSEQ), adapted for qPCR data. In brief, **WILDSEQ** takes input `fastq` files and performs quality control, primer trimming, alignment, and 
 species identification, and outputs the relevant results which can be found in `/indir/05_results/` 
 including:
 - `indir_multiqc.html`: quality control run summary from `MultiQC`;
