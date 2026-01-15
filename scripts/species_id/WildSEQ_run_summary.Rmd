@@ -114,30 +114,45 @@ cites_map <- tibble::tibble(species_ID = c("E.maximus", "L.africana", "L.cycloti
                                       "II", "III", NA, 
                                       NA, NA, NA, NA))
 
+# Calculate percent mapped reads (total reads) per barcode
+barcode_totals <- species_calls %>%
+  group_by(barcode) %>%
+  summarise(total_barcode_reads = sum(reads), .groups = "drop")
+
+# Join totals and calculate percent mapped for the top species
+species_summary <- species_summary %>%
+  left_join(barcode_totals, by = "barcode") %>%
+  mutate(percent_mapped = (total_reads / total_barcode_reads) * 100)
+
+# Define Inconclusive flag = <20 reads or <95% mapped reads
+species_summary <- species_summary %>%
+  mutate(inconclusive = total_reads < 20 | percent_mapped < 95)
+
+
 # Add CITES information to summary table
 species_summary <- species_summary %>%
                   left_join(cites_map, by = "species_ID") %>%  # join CITES info to summary
                   mutate(
-                    species_fill = factor(ifelse(total_reads < 20, "Inconclusive", species_ID), # if reads <20, class as "Inconclusive", otherwise species_ID
+                    species_fill = factor(ifelse(inconclusive, "Inconclusive", species_ID), # if Inconclusive, class as "Inconclusive", otherwise species_ID
       levels = c(
         sort(unique(species_calls$species_ID[species_calls$reads >= 20])), "Inconclusive")), # ensure Inconclusive is the last factor level
     species_label = ifelse(
-      total_reads < 20, NA, species_ID), # dont add species label if <20 reads
+      inconclusive, NA, species_ID), # dont add species label if Inconclusive
     reads_label = ifelse(
-      total_reads < 20, "Inconclusive", as.character(total_reads)), # <20 reads labelled as Inconclusive
+      inconclusive, "Inconclusive", as.character(total_reads)), # if Inconclusive labelled as Inconclusive
     reads_label_color = ifelse(
-      total_reads < 20, "red", "black"), # format text colour of reads label: Inconclusive=red, otherwise black
+      inconclusive, "red", "black"), # format text colour of reads label: Inconclusive=red, otherwise black
     reads_label_face = ifelse(
-      total_reads < 20, "bold", "plain"), # format text type of reads label: Inconclusive=bold, otherwise plain
+      inconclusive, "bold", "plain"), # format text type of reads label: Inconclusive=bold, otherwise plain
     barcode = forcats::fct_rev(factor(barcode)), # reverse barcode levels so ascending order
     # CITES labelling
     `CITES Detected?` = case_when(
-      total_reads < 20 ~ "No", # if <20 reads then NO
+      inconclusive ~ "No", # if Inconclusive then NO
       is.na(cites) ~ "No", # if has NA in CITES mapping then NO
       TRUE ~ paste0("Yes, App ", cites)), # otherwise say Yes, App X, defined by cites_map
     # Define Species Groups
     `Species Group` = case_when(
-      total_reads < 20 ~ "Inconclusive", # if <20 reads then Inconclusive 
+      inconclusive ~ "Inconclusive", # if Inconclusive then Inconclusive 
       species_ID %in% c("E.maximus", "L.africana", "L.cyclotis") ~ "Elephant", # elephants
       species_ID == "Mammoth" ~ "Mammoth", # mammoths
       species_ID %in% c("C.simum", "D.bicornis", "D.sumantrensis", # rhinos
@@ -152,7 +167,7 @@ species_summary <- species_summary %>%
       TRUE ~ NA_character_),
     # Define Common Names
     `Common Name` = case_when(
-      total_reads < 20 ~ "Inconclusive", # if <20 reads then Inconclusive
+      inconclusive ~ "Inconclusive", # if Inconclusive then Inconclusive
       species_ID == "E.maximus" ~ "Asian",
       species_ID == "L.africana" ~ "African savannah",
       species_ID == "L.cyclotis" ~ "African forest",
@@ -171,7 +186,7 @@ species_summary <- species_summary %>%
       species_ID == "H.sapiens" ~ "Human", # human
       TRUE ~ NA_character_),
     # Define Scientific Names
-     `Scientific Name` = ifelse(total_reads < 20, "Inconclusive", species_ID))  # same as species_ID unless Inconclusive
+     `Scientific Name` = ifelse(inconclusive, "Inconclusive", species_ID))  # same as species_ID unless Inconclusive
 
 ```
 
@@ -368,7 +383,14 @@ barcode_plot_list <- lapply(selected_barcodes, function(bc) {
   
 # % map and AT defining
 top_reads <- max(df_bc$reads, na.rm = TRUE) # ID top species based on read count
-top_species <- if (top_reads < 20) NA else df_bc$species_ID[which.max(df_bc$reads)] # if <20 reads then NA
+top_percent <- df_bc$percent_mapped[which.max(df_bc$reads)]
+
+top_species <- if (top_reads < 20 | top_percent < 95) {
+  NA
+} else {
+  df_bc$species_ID[which.max(df_bc$reads)]
+}
+
 total_reads <- sum(df_bc$reads, na.rm = TRUE) # calc total reads per barcode
 
 threshold_10pct <- total_reads * 0.10 # find 10% threshold for AT
@@ -483,14 +505,9 @@ cat(sprintf("
 
 ```{r run_summary_table, echo=FALSE, results='asis'}
 # Run summary table:
-  # Calculate total reads per barcode
-barcode_totals <- species_calls %>% 
-  group_by(barcode) %>% 
-  summarise(total_barcode_reads = sum(reads), 
-            .groups = "drop")
-  # Calculate % mapped reads for top species_ID per barcode
+
+  # Make sure Sci Name correct for Inconclusives
 species_summary <- species_summary %>% 
-  left_join(barcode_totals, by = "barcode") %>%
   mutate(percent_mapped = ifelse(`Scientific Name` == "Inconclusive",
                                  "NA", # Inconclusive = reads mapped = NA
                                  paste0(round((total_reads / total_barcode_reads) * 100, 1), "%")))
