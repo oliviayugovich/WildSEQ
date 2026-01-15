@@ -1,0 +1,625 @@
+---
+output:
+  pdf_document:
+    latex_engine: xelatex
+    keep_tex: false
+    includes:
+      in_header: font_setup.tex
+params:
+  indir: NULL
+  results_dir: NULL
+  script_dir: ""
+  fonts_dir: ""
+header-includes:
+  - \usepackage{lastpage}
+  - \usepackage{fancyhdr}
+  - \pagestyle{fancy}
+  - \fancyhf{}
+  - \fancyfoot[C]{Page \thepage\ of \pageref{LastPage}}
+  - \fancyhead{}
+  - \renewcommand{\headrulewidth}{0pt}
+---
+
+<!--
+WildSEQ: a qPCR Sequencing Bioinformatics Pipeline
+Authors: O. Yugovich
+
+This file is part of WildSEQ.
+Copyright (C) 2025 Olivia Yugovich
+
+WildSEQ is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program. If not, see <http://www.gnu.org/licenses/>.
+-->
+
+
+```{r set_up, results='asis', echo=FALSE}
+# Set up RMarkdown options
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+# Escape special characters for LaTeX (_#%&$)
+sanitize_latex <- function(x) {
+  x <- gsub("([_#%&$])", "\\\\\\1", x, perl = TRUE)
+  return(x)
+}
+
+```
+
+
+```{r load_libraries, echo=FALSE, message=FALSE, warning=FALSE, include = FALSE}
+# Load all required libraries
+required_pkgs <- c("viridis", "knitr", "patchwork", "forcats", "rmarkdown", "flextable",
+                   "readr", "ggplot2", "tidyverse", "scales", "dplyr", "ggtext", "tibble",
+                   "stringr", "officer")
+lapply(required_pkgs, library, character.only = TRUE)
+
+```
+
+
+```{r read_in_csv, echo=FALSE, message=FALSE, warning=FALSE}
+# define indir/results dir from bash script
+  # locate input data from indir/04_align/bams
+  # locate results dir for r outputs in indir/05_results
+indir <- sub("/$", "", params$indir)
+results_dir <- sub("/$", "", params$results_dir)
+indir_basename <- basename(indir) # get indir basename for report (not absolute path)
+
+# Define the absolute path of results_dir to locate R output csv 
+  # avoid issues with relative paths
+species_calls_path <- file.path(results_dir, paste0(indir_basename, "_species_calls.csv"))
+species_calls_path <- normalizePath(species_calls_path, mustWork = FALSE)
+
+
+# Read in the R output csv
+species_calls <- readr::read_csv(species_calls_path)
+
+```
+
+
+```{r run_summary_data, echo=FALSE, message=FALSE, warning=FALSE}
+# data manipulation preparing for run summary plotting:
+  # create summary table that contains: barcode, species_ID, total_reads (top species ID result)
+species_summary <- species_calls %>% # summary table
+  mutate(species_ID = ifelse(species_ID == "M.primigenius", "Mammoth", species_ID)) %>% # change M.primigenius to just mammoth
+  group_by(barcode, species_ID) %>%
+  summarise(total_reads = sum(reads), .groups = 'drop') %>% # prepare to find top species, ignoring off target reads
+  group_by(barcode) %>%
+  slice_max(order_by = total_reads, n = 1, with_ties = FALSE) %>% # find the top 1 species per barcode to determine species ID
+  ungroup()
+
+# Define species and their associated CITES protection or non-protection
+cites_map <- tibble::tibble(species_ID = c("E.maximus", "L.africana", "L.cyclotis", # elephants
+                                           "Mammoth", # mammoths
+                                           "C.simum", "D.bicornis", "D.sumantrensis", # rhinos
+                                           "R.sondaicus", "R.unicornis", # rhinos cont.
+                                           "H.amphibius", "O.rosmarus", "B.taurus", # hippo, walrus, cow
+                                           "F.catus", "C. lupus familiaris", "B.bubalis", "H.sapiens"), # cat, dog, water buffalo
+                            cites = c("I", "I", "I", # associated cites appendices for each species
+                                      NA, 
+                                      "I", "I", "I", 
+                                      "I", "I", 
+                                      "II", "III", NA, 
+                                      NA, NA, NA, NA))
+
+# Add CITES information to summary table
+species_summary <- species_summary %>%
+                  left_join(cites_map, by = "species_ID") %>%  # join CITES info to summary
+                  mutate(
+                    species_fill = factor(ifelse(total_reads < 20, "Inconclusive", species_ID), # if reads <20, class as "Inconclusive", otherwise species_ID
+      levels = c(
+        sort(unique(species_calls$species_ID[species_calls$reads >= 20])), "Inconclusive")), # ensure Inconclusive is the last factor level
+    species_label = ifelse(
+      total_reads < 20, NA, species_ID), # dont add species label if <20 reads
+    reads_label = ifelse(
+      total_reads < 20, "Inconclusive", as.character(total_reads)), # <20 reads labelled as Inconclusive
+    reads_label_color = ifelse(
+      total_reads < 20, "red", "black"), # format text colour of reads label: Inconclusive=red, otherwise black
+    reads_label_face = ifelse(
+      total_reads < 20, "bold", "plain"), # format text type of reads label: Inconclusive=bold, otherwise plain
+    barcode = forcats::fct_rev(factor(barcode)), # reverse barcode levels so ascending order
+    # CITES labelling
+    `CITES Detected?` = case_when(
+      total_reads < 20 ~ "No", # if <20 reads then NO
+      is.na(cites) ~ "No", # if has NA in CITES mapping then NO
+      TRUE ~ paste0("Yes, App ", cites)), # otherwise say Yes, App X, defined by cites_map
+    # Define Species Groups
+    `Species Group` = case_when(
+      total_reads < 20 ~ "Inconclusive", # if <20 reads then Inconclusive 
+      species_ID %in% c("E.maximus", "L.africana", "L.cyclotis") ~ "Elephant", # elephants
+      species_ID == "Mammoth" ~ "Mammoth", # mammoths
+      species_ID %in% c("C.simum", "D.bicornis", "D.sumantrensis", # rhinos
+                        "R.sondaicus", "R.unicornis") ~ "Rhinoceros", # rhinos cont.
+      species_ID == "H.amphibius" ~ "Hippo", # hippo
+      species_ID == "O.rosmarus" ~ "Walrus", # walrus
+      species_ID == "B.taurus" ~ "Cow", # cow
+      species_ID == "F.catus" ~ "Cat", # cat
+      species_ID == "C. lupus familiaris" ~ "Dog", # dog
+      species_ID == "B.bubalis" ~ "Buffalo", # water buffalo
+      species_ID == "H.sapiens" ~ "Human", # human
+      TRUE ~ NA_character_),
+    # Define Common Names
+    `Common Name` = case_when(
+      total_reads < 20 ~ "Inconclusive", # if <20 reads then Inconclusive
+      species_ID == "E.maximus" ~ "Asian",
+      species_ID == "L.africana" ~ "African savannah",
+      species_ID == "L.cyclotis" ~ "African forest",
+      species_ID == "Mammoth" ~ "Mammoth",
+      species_ID == "C.simum" ~ "White",
+      species_ID == "D.bicornis" ~ "Black",
+      species_ID == "D.sumantrensis" ~ "Sumatran",
+      species_ID == "R.sondaicus" ~ "Javan",
+      species_ID == "R.unicornis" ~ "Great Indian",
+      species_ID == "H.amphibius" ~ "Hippopotamus",
+      species_ID == "O.rosmarus" ~ "Walrus",
+      species_ID == "B.taurus" ~ "Cow",
+      species_ID == "F.catus" ~ "Cat",
+      species_ID == "C. lupus familiaris" ~ "Dog",
+      species_ID == "B.bubalis" ~ "Water Buffalo",
+      species_ID == "H.sapiens" ~ "Human", # human
+      TRUE ~ NA_character_),
+    # Define Scientific Names
+     `Scientific Name` = ifelse(total_reads < 20, "Inconclusive", species_ID))  # same as species_ID unless Inconclusive
+
+```
+
+
+```{r run_summary_plot, echo=FALSE, fig.height=6, fig.width=9, results = "asis", echo=FALSE}
+# Split barcodes into chunks of 25, make run summary plots in groups of 25 barcodes
+  # for good sizing and spacing of each plot
+barcode_chunks <- split(
+  unique(species_summary$barcode),
+  ceiling(seq_along(unique(species_summary$barcode)) / 25))
+
+# Define plot colour fill of species_ID dynamically
+species_ids <- unique(species_summary$species_fill)
+species_ids <- species_ids[species_ids != "Inconclusive"] # dont include Inconclusive values
+species_colors <- viridis::viridis(length(species_ids), # define species colours
+                                   option = "C", direction = 1) 
+species_colors_light <- scales::alpha(species_colors, alpha = 0.5) # only use light colours
+fill_colors <- setNames(species_colors_light, species_ids)
+fill_colors["Inconclusive"] <- "red" # Inconclusive values always red
+
+# Loop over each chunk and make run summary plot
+for (i in seq_along(barcode_chunks)) {
+  chunk_barcodes <- barcode_chunks[[i]]
+  chunk_data <- species_summary %>% filter(barcode %in% chunk_barcodes)
+
+  # Print the banner
+  cat(sprintf("
+\\noindent
+\\vspace*{-3em}
+\\begin{center}
+\\hspace*{-0.5cm}
+\\includegraphics[width=1.05\\textwidth]{banner.png}
+\\end{center}
+\\vspace{-2.5em}
+
+\\noindent
+\\vspace{1em}
+\\begin{tabular*}{\\textwidth}{@{\\extracolsep{\\fill}} l c r }
+\\textbf{Date:} %s & \\textbf{Samples Analysed:} %s & \\textbf{WildSEQ Version:} 1.1 \\\\
+\\end{tabular*}
+
+\\vspace{1.2em}
+\\noindent
+\\begin{center}
+\\textbf{\\LARGE WildSEQ Overview}
+\\end{center}
+\\vspace{1em}
+\\vspace{1em}
+", format(Sys.Date(), "%d %B %Y"), sanitize_latex(basename(params$indir))))
+
+  # Calculate max_reads for scaling
+  max_reads <- max(chunk_data$total_reads)
+
+  # Create run summary plot
+  p <- ggplot(chunk_data, aes(x = total_reads, y = barcode, fill = species_fill)) +
+    geom_bar(stat = "identity", width = 0.7) +
+    geom_text(aes(label = species_label, fontface = "bold.italic"),
+              position = position_stack(vjust = 0.5),
+              size = 4, color = "black", na.rm = TRUE) +
+    geom_text(aes(label = reads_label, color = reads_label_color,
+                  fontface = reads_label_face),
+              position = position_identity(), hjust = -0.2,
+              size = 3, show.legend = FALSE) +
+    scale_fill_manual(values = fill_colors, name = "Species Result") +
+    scale_color_identity() +
+    scale_x_continuous(limits = c(0, max_reads * 1.05),
+                       breaks = seq(0, max_reads * 1.05, by = 500)) +
+    labs(x = "Reads", y = "Barcode") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+          axis.text.y = element_text(size = 12),
+          axis.title.x = element_text(size = 14),
+          axis.title.y = element_text(size = 14),
+          legend.position = "none")
+
+  print(p)
+
+# Add CITES alert message
+cites_caption <- chunk_data %>%
+  filter(`CITES Detected?` != "No") %>%
+  pull(barcode) %>%
+  unique() %>%
+  tibble(barcode = .) %>%
+  mutate(numeric_part = as.numeric(gsub("barcode", "", barcode))) %>%
+  arrange(numeric_part) %>%
+  pull(barcode)
+
+if (length(cites_caption) > 0) {
+  # First 4 barcodes for line 1
+  line1 <- paste0("Alert: CITES species detected in ", paste(cites_caption[1:min(4, length(cites_caption))], collapse = ", "))
+
+  # Remaining barcodes after the first 4
+  if (length(cites_caption) > 4) {
+    rest <- cites_caption[-(1:4)]
+    # Split remaining into groups of 7
+    rest_lines <- split(rest, ceiling(seq_along(rest) / 7))
+    # Format each group
+    wrapped_lines <- sapply(rest_lines, function(x) paste(x, collapse = ", "))
+    all_lines <- c(line1, wrapped_lines)
+  } else {
+    all_lines <- line1
+  }
+
+  # Combine caption elements into latex string
+  caption_text <- paste(all_lines, collapse = " \\\\\n")
+
+  # print caption
+  cat(paste0(
+    "\\begin{flushleft}\n",
+    "{\\color[HTML]{CC5500} \\textbf{\\fontsize{12}{14}\\selectfont\n",
+    caption_text, "\n",
+    "}}\n",
+    "\\end{flushleft}\n"
+  ))
+}
+
+# Page break if not the last plot
+if (i < length(barcode_chunks)) {
+  cat("\\newpage\n")
+}
+}
+```
+
+\newpage
+
+```{r barcode_plots,  echo=FALSE, message=FALSE, warning=FALSE,  results='asis', fig.height=12, fig.width=12}
+# Mapping species IDs to common names and CITES appendix info
+species_common <- c(
+  "E.maximus" = "Asian elephant",
+  "L.africana" = "African savannah elephant",
+  "L.cyclotis" = "African forest elephant",
+  "Mammoth" = "Mammoth",
+  "C.simum" = "White rhinoceros",
+  "D.bicornis" = "Black rhinoceros",
+  "D.sumantrensis" = "Sumatran rhinoceros",
+  "R.sondaicus" = "Javan rhinoceros",
+  "R.unicornis" = "Great Indian rhinoceros",
+  "H.amphibius" = "Hippopotamus",
+  "O.rosmarus" = "Walrus",
+  "B.taurus" = "Cow",
+  "F.catus" = "Cat",
+  "C. lupus familiaris" = "Dog",
+  "B.bubalis" = "Water Buffalo",
+  "H.sapiens" = "Human"
+)
+cites_map <- tibble::tibble(
+  species_ID = names(species_common),
+  cites = c("I", "I", "I", NA,
+            "I", "I", "I", "I", "I", "II", "III", 
+            NA, NA, NA, NA, NA)
+)
+
+# Prepare barcodes and plotting
+unique_barcodes <- unique(species_calls$barcode)
+plots_per_page <- 4  # Always 4 barcode plots per page
+n_pages <- ceiling(length(unique_barcodes) / plots_per_page)
+
+for (page in seq_len(n_pages)) {
+  # Print banner on each new page
+  cat(sprintf("
+\\newpage
+\\noindent
+\\vspace*{-3em}
+\\begin{center}
+\\hspace*{-0.5cm}
+\\includegraphics[width=1.05\\textwidth]{banner.png}
+\\end{center}
+\\vspace{-2.5em}
+
+\\noindent
+\\vspace{1em}
+\\begin{tabular*}{\\textwidth}{@{\\extracolsep{\\fill}} l c r }
+\\textbf{Date:} %s & \\textbf{Samples Analysed:} %s & \\textbf{WildSEQ Version:} 1.1 \\\\
+\\end{tabular*}
+\\vspace{0.5em}
+
+\\begin{center}
+\\textbf{\\LARGE WildSEQ Per-Sample Summary}
+\\end{center}
+", format(Sys.Date(), "%d %B %Y"), sanitize_latex(basename(params$indir))))
+
+# format of barcode plot pages
+start_idx <- (page - 1) * plots_per_page + 1 # calculate starting index for barcodes on this page
+  end_idx <- min(start_idx + plots_per_page - 1, length(unique_barcodes)) # calculate end index for barcodes on this page
+  selected_barcodes <- unique_barcodes[start_idx:end_idx] # select barcodes for this page
+
+# Generate plot for each barcode on the current page
+barcode_plot_list <- lapply(selected_barcodes, function(bc) {
+  df_bc <- species_calls %>%
+    filter(barcode == bc) %>% # filter df for current barcode 
+    group_by(barcode) %>%
+    mutate(percent_mapped = (reads / sum(reads)) * 100) %>% # calc % mapped reads
+    ungroup()
+  
+# % map and AT defining
+top_reads <- max(df_bc$reads, na.rm = TRUE) # ID top species based on read count
+top_species <- if (top_reads < 20) NA else df_bc$species_ID[which.max(df_bc$reads)] # if <20 reads then NA
+total_reads <- sum(df_bc$reads, na.rm = TRUE) # calc total reads per barcode
+
+threshold_10pct <- total_reads * 0.10 # find 10% threshold for AT
+grey_threshold <- if (top_reads < 20) 20 else threshold_10pct # Use fixed threshold of 20 for inconclusive
+y_max_reads <- max(top_reads, grey_threshold) # use fixed 20 read threshold unless >20 reads then use 10% AT
+y_max_percent <- 100 # % mapped max value is 100%
+
+# Caption:
+  # Common name from common_name unless inconclusive
+    common_name <- if (!is.na(top_species) && top_species %in% names(species_common)) {
+      species_common[[top_species]]
+    } else {
+      "Inconclusive"
+    }
+  # sci name from sci_name unless inconclusive
+    sci_name <- if (!is.na(top_species)) top_species else "Inconclusive"
+  # get cites appendix info from cites_map
+    cites_app <- cites_map %>%
+      filter(species_ID == top_species) %>%
+      pull(cites)
+  # building cites caption
+    cites_caption <- if (length(cites_app) > 0 && !is.na(cites_app)) {
+      paste0("CITES Appendix ", cites_app)
+    } else {
+      ""
+    }
+  # building cites caption for inconclusives and correct formatting
+    final_caption <- if (sci_name == "Inconclusive") {
+      "**WildSEQ-ID:** Inconclusive"
+    } else {
+      paste0(
+        "<b>WildSEQ-ID:</b> ", common_name, "<br><br>",
+        "<i>", sci_name, "</i><br><br>",
+        cites_caption
+      )
+    }
+
+    # per barcode plots
+    ggplot(df_bc, aes(x = fct_reorder(species_ID, reads, .desc = TRUE), y = reads, fill = species_ID)) + # species_ID in descending order
+      geom_rect(aes(xmin = -Inf, xmax = Inf, ymin = 0, ymax = grey_threshold), # grey transparent threshold (10%)
+                fill = "grey", alpha = 0.3) +
+      geom_col(show.legend = FALSE, width = 0.5) +
+      geom_text(aes(label = ifelse(is.na(percent_mapped), "", sprintf("%.1f%%", percent_mapped))), # % mapped reads labels
+                position = position_stack(vjust = 0.5),
+                color = "black", size = 4) +
+      scale_y_continuous( # % mapped reads on second y axis
+        name = "Reads",
+        limits = c(0, y_max_reads),
+        sec.axis = sec_axis(~ . * (y_max_percent / y_max_reads), name = "% Mapped") 
+      ) +
+      scale_fill_manual(values = fill_colors) + # colours from run summary plot
+      labs( # plot labels/caption
+        title = paste("Barcode:", bc),
+        x = "Aligned Species",
+        y = "Reads",
+        caption = final_caption
+      ) +
+      theme_minimal() +
+      theme( # text size
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(face = "bold", size = 18),
+        plot.caption = element_markdown(hjust = 0, face = "plain", size = 18),
+        plot.margin = unit(c(1, 1, 2, 1), "cm")
+      )
+  })
+  
+  # remove any barcodes with no values
+  barcode_plot_list <- barcode_plot_list[!sapply(barcode_plot_list, is.null)]
+  # combine into multiple plots, 4 per page
+  combined_plot <- patchwork::wrap_plots(barcode_plot_list,
+                                         ncol = 2, nrow = 2) +
+    plot_layout(heights = rep(1, 2)) +
+    theme(plot.spacing = unit(3, "cm"))
+  # print combined plot
+  print(combined_plot)
+}
+
+
+```
+
+\newpage
+
+```{r banner_pg3, results = "asis", echo = FALSE, cache = FALSE}
+# WildSEQ banner - pg3
+cat(sprintf("
+\\noindent
+\\vspace*{-3em}
+\\begin{center}
+\\hspace*{-0.5cm}
+\\includegraphics[width=1.05\\textwidth]{banner.png}
+\\end{center}
+\\vspace{-2.5em}
+
+\\noindent
+\\vspace{1em}
+\\begin{tabular*}{\\textwidth}{@{\\extracolsep{\\fill}} l c r }
+\\textbf{Date:} %s & \\textbf{Samples Analysed:} %s & \\textbf{WildSEQ Version:} 1.1 \\\\
+\\end{tabular*}
+\\vspace{-0.5em}
+", format(Sys.Date(), "%d %B %Y"), sanitize_latex(basename(params$indir))))
+
+# Latex code below for summary table heading
+```
+
+\vspace{0.5cm}
+\begin{center}
+\textbf{\LARGE WildSEQ Species Identification}
+\end{center}
+
+```{r run_summary_table, echo=FALSE, results='asis'}
+# Run summary table:
+  # Calculate total reads per barcode
+barcode_totals <- species_calls %>% 
+  group_by(barcode) %>% 
+  summarise(total_barcode_reads = sum(reads), 
+            .groups = "drop")
+  # Calculate % mapped reads for top species_ID per barcode
+species_summary <- species_summary %>% 
+  left_join(barcode_totals, by = "barcode") %>%
+  mutate(percent_mapped = ifelse(`Scientific Name` == "Inconclusive",
+                                 "NA", # Inconclusive = reads mapped = NA
+                                 paste0(round((total_reads / total_barcode_reads) * 100, 1), "%")))
+  
+
+  # From run summary data, take necessary columns
+summary_table <- species_summary %>%
+  select(
+    Barcode = barcode,
+    `Species Group`,
+    `Common Name`,
+    `Scientific Name`,
+    `CITES Detected?`,
+    `Mapped Reads` = percent_mapped)
+
+# Create dynamic flextable for run summary info
+flextable(summary_table) %>%
+  # hardcoding widths of columns
+  width(j = "Barcode", width = 1) %>%
+  width(j = "Species Group", width = 1) %>%
+  width(j = "Common Name", width = 1) %>%
+  width(j = "Scientific Name", width = 1) %>%
+  width(j = "CITES Detected?", width = 1) %>%
+  width(j = "Mapped Reads", width = 1) %>%
+  bold(part = "header") %>% # format header (bold)
+  align(align = "center", part = "all") %>% # align centre
+  fontsize(size = 10, part = "all") %>% # text size
+  set_header_labels(`Species Group` = "Species Group",  # column headings
+                    `Common Name` = "Common Name", 
+                    `Scientific Name` = "Scientific Name", 
+                    `CITES Detected?` = "CITES?",
+                    `Mapped Reads` = "Mapped Reads") %>%
+  italic(i = which(summary_table$`Scientific Name` != "Inconclusive"), 
+         j = "Scientific Name") %>% # italicise sci name except inconclusive
+  border_inner_h(border = fp_border(color = "grey70", width = 0.8)) #add row border lines
+
+```
+
+\newpage
+
+```{r banner_pg4, results = "asis", echo = FALSE, cache = FALSE}
+# WildSEQ heading - pg4
+cat(sprintf("
+\\noindent
+\\vspace*{-3em}
+\\begin{center}
+\\hspace*{-0.5cm}
+\\includegraphics[width=1.05\\textwidth]{banner.png}
+\\end{center}
+\\vspace{-2.5em}
+
+\\noindent
+\\vspace{1em}
+\\begin{tabular*}{\\textwidth}{@{\\extracolsep{\\fill}} l c r }
+\\textbf{Date:} %s & \\textbf{Samples Analysed:} %s & \\textbf{WildSEQ Version:} 1.1 \\\\
+\\end{tabular*}
+\\vspace{-0.5em}
+", format(Sys.Date(), "%d %B %Y"), sanitize_latex(basename(params$indir))))
+```
+
+\vspace{0.5cm}
+\begin{center}
+\textbf{\LARGE WildSEQ Dependencies}
+\end{center}
+
+```{r dependencies_table, echo=FALSE, results='asis'}
+# WildSEQ dependencies table
+dependencies <- tribble(
+  ~Language,  ~Tool,         ~Version,
+  "Python",   "Python",       "3.13",
+  "Python",   "Biopython",    "1.85",
+  "Python",   "MultiQC",      "1.28",
+  "Python",   "FastQC",       "0.12.1",
+  "Python",   "Bowtie2",      "2.5.4",
+  "Python",   "Samtools",     "1.21",
+
+  "R",        "R Base",       "4.4.3",
+  "R",        "Tidyverse",    "2.0.0",
+  "R",        "dplyr",        "1.1.4",
+  "R",        "Rsamtools",    "2.22.0",
+  "R",        "here",         "1.0.1",
+  "R",        "rmarkdown",    "2.29",
+  "R",        "viridis",      "0.6.2",
+  "R",        "knitr",        "1.43",
+  "R",        "forcats",      "1.0.0",
+  "R",        "flextable",    "0.7.5",
+  "R",        "readr",        "2.1.4",
+  "R",        "ggplot2",      "3.4.3",
+  "R",        "scales",       "1.2.1",
+  "R",        "tibble",       "3.2.1",
+  "R",        "stringr",      "1.5.0",
+  "R",        "officer",      "0.4.14",
+  "R",        "patchwork",    "1.1.2",
+  "R",        "ggtext",       "0.1.3"
+)
+
+# python tools - col1
+py_tools <- dependencies %>%
+  filter(Language == "Python") %>%
+  mutate(text = paste0(Tool, " ", Version)) %>% # List tools and versions
+  pull(text)
+
+# r tools - col2
+r_tools <- dependencies %>%
+  filter(Language == "R") %>%
+  mutate(text = paste0(Tool, " ", Version)) %>%
+  pull(text)
+
+# Wrap every 2 tools per line for page formatting
+wrap_list <- function(x, n = 2) {
+  paste(sapply(seq(1, length(x), by = n), function(i) {
+    paste(x[i:min(i + n - 1, length(x))], collapse = ", ")
+  }), collapse = "\n")
+}
+
+py_text <- wrap_list(py_tools)
+r_text <- wrap_list(r_tools)
+
+# Create data frame with one row, two columns
+dep_data <- tibble(
+  Python = py_text,
+  R = r_text
+)
+
+# build table using flextable
+dep.table <- flextable(dep_data) %>%
+    autofit() %>%
+    add_footer_lines("Banner created with Biorender (https://biorender.com/)") %>% # add biorender caption
+    italic(i = 1, part = "footer") %>% # italics for caption
+    theme_booktabs()
+dep.table
+```

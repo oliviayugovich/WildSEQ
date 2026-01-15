@@ -1,0 +1,17 @@
+species_group,sci_name,common_name,genbank_accession
+elephant,Elephas maximus,Asian,NC_005129.2
+elephant,Loxodonta africana,African savannah,NC_000934.1
+elephant,Loxodonta cyclotis,African forest,MT636097.1
+rhinoceros,Ceratotherium simum simum,White,Y07726.1
+rhinoceros,Diceros bicornis,Black,MK909143.1
+rhinoceros,Dicerorhinus sumatrensis,Sumatran,FJ905816.1
+rhinoceros,Rhinoceros sondaicus,Javan,FJ905815.1
+rhinoceros,Rhinoceros unicornis,Great Indian,NC_001779.1
+hippopotamus,Hippopotamus amphibius,Common,NC_000889.1
+walrus,Odobenus rosmarus,Atlantic,AJ428576.2
+human,Homo sapiens,Human,NC_012920.1
+mammoth,Mammuthus primigenius,Wooly,MZ325504.1
+cow,Bos taurus,Cow,KC153975.1
+cat,Felis catus,Cat,NC_001700.1
+dog,Canis lupus familiaris,Dog,NC_002008.4
+water buffalo,Bubalus bubalis,Water buffalo,KX758353.1
